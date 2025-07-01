@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""
+video_transcribe.py
+
+Given a video file, extract its audio, detect the spoken language,
+transcribe speech-to-text, and (if non-English) translate into English.
+Writes out a .txt transcript.
+"""
+
+import os
+import sys
+import tempfile
+import ffmpeg
+import whisper
+
+def extract_audio(video_path: str, audio_path: str):
+    """
+    Extracts audio from video_path and saves to audio_path (wav, 16kHz mono).
+    """
+    (
+        ffmpeg
+        .input(video_path)
+        .output(audio_path,
+                format='wav',
+                acodec='pcm_s16le',
+                ac=1,
+                ar='16000')
+        .overwrite_output()
+        .run(quiet=True)
+    )
+
+def transcribe_and_translate(audio_path: str, model_size: str = "small"):
+    """
+    Loads Whisper model, detects language, transcribes, and (if needed) translates.
+    Returns a dict with keys: 'language', 'transcript'.
+    """
+    model = whisper.load_model(model_size)
+
+    # 1. Detect language
+    audio = whisper.load_audio(audio_path)
+    audio = whisper.pad_or_trim(audio)
+    mel = whisper.log_mel_spectrogram(audio).to(model.device)
+    _, probs = model.detect_language(mel)
+    lang = max(probs, key=probs.get)
+    print(f"Detected language: {lang} (confidence {probs[lang]:.2%})")
+
+    # 2. Choose task
+    task = "translate" if lang != "en" else "transcribe"
+    print(f"Running Whisper task='{task}'...")
+
+    # 3. Transcribe (and translate if task='translate')
+    result = model.transcribe(audio_path, task=task)
+    text = result["text"].strip()
+
+    return {"language": lang, "transcript": text}
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: python video_transcribe.py <input_video> [output_txt]")
+        sys.exit(1)
+
+    video_path = sys.argv[1]
+    output_path = sys.argv[2] if len(sys.argv) >= 3 else "transcript.txt"
+
+    if not os.path.isfile(video_path):
+        print(f"Error: video file '{video_path}' not found.")
+        sys.exit(1)
+
+    # Temp audio file
+    with tempfile.TemporaryDirectory() as tmpdir:
+        audio_path = os.path.join(tmpdir, "audio.wav")
+        print("Extracting audio...")
+        extract_audio(video_path, audio_path)
+
+        print("Transcribing...")
+        result = transcribe_and_translate(audio_path)
+
+    # Write out transcript
+    with open(output_path, "w", encoding="utf-8") as f:
+        if result["language"] != "en":
+            f.write(f"[Original language: {result['language']}]\n\n")
+        f.write(result["transcript"] + "\n")
+
+    print(f"Transcript saved to '{output_path}'.")
+
+if __name__ == "__main__":
+    main()
